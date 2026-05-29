@@ -36,3 +36,5 @@ if (check_result_is_valid(&result)) {
 ## License
 
 MIT
+
+Part of the [SuperInstance OpenConstruct](https://github.com/SuperInstance/OpenConstruct) ecosystem.
