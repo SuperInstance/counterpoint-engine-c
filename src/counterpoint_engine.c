@@ -1,5 +1,8 @@
+#define _POSIX_C_SOURCE 199309L
 #include "counterpoint_engine.h"
 #include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
 
 /* ── Interval classification ────────────────────────────────────────── */
 
@@ -52,14 +55,22 @@ double note_frequency(int midi) {
     return 440.0 * pow(2.0, (midi - 69) / 12.0);
 }
 
+Interval note_interval_to(int a, int b) {
+    return interval_between(a, b);
+}
+
 /* ── Voice pair ──────────────────────────────────────────────────────── */
 
 VoicePair voice_pair_new(int *cf, int *cp, int length) {
-    VoicePair vp = { cf, cp, length };
+    VoicePair vp;
+    vp.cf = cf;
+    vp.cp = cp;
+    vp.length = length;
     return vp;
 }
 
 int voice_pair_consonance_count(VoicePair *vp) {
+    if (!vp || !vp->cf || !vp->cp || vp->length <= 0) return 0;
     int count = 0;
     for (int i = 0; i < vp->length; i++) {
         if (interval_is_consonance(vp->cf[i] - vp->cp[i])) count++;
@@ -68,20 +79,27 @@ int voice_pair_consonance_count(VoicePair *vp) {
 }
 
 int voice_pair_dissonance_count(VoicePair *vp) {
+    if (!vp || vp->length <= 0) return 0;
     return vp->length - voice_pair_consonance_count(vp);
 }
 
 /* ── Checker ─────────────────────────────────────────────────────────── */
 
 CounterpointChecker checker_default(void) {
-    CounterpointChecker c = { 1, 8 };
+    CounterpointChecker c;
+    c.allow_imperfect = 1;
+    c.max_leap = 8;
     return c;
 }
 
 CheckResult checker_check(CounterpointChecker *c, VoicePair *vp) {
     CheckResult r;
-    r.violation_count = 0;
-    r.score = 0.0;
+    memset(&r, 0, sizeof(r));
+
+    if (!c || !vp || !vp->cf || !vp->cp || vp->length <= 0) {
+        r.score = 0.0;
+        return r;
+    }
 
     /* Check consonances */
     for (int i = 0; i < vp->length; i++) {
@@ -105,13 +123,11 @@ CheckResult checker_check(CounterpointChecker *c, VoicePair *vp) {
             r.violations[r.violation_count].detail = 7;
             r.violation_count++;
         }
-        if ((prev_iv == 0 && curr_iv == 0) || (prev_iv == 12 && curr_iv == 12)) {
-            if (r.violation_count < MAX_VIOLATIONS) {
-                r.violations[r.violation_count].type = VIOLATION_PARALLEL_OCTAVES;
-                r.violations[r.violation_count].index = i;
-                r.violations[r.violation_count].detail = prev_iv;
-                r.violation_count++;
-            }
+        if ((prev_iv == 0 && curr_iv == 0) && r.violation_count < MAX_VIOLATIONS) {
+            r.violations[r.violation_count].type = VIOLATION_PARALLEL_OCTAVES;
+            r.violations[r.violation_count].index = i;
+            r.violations[r.violation_count].detail = 0;
+            r.violation_count++;
         }
     }
 
@@ -136,7 +152,7 @@ CheckResult checker_check(CounterpointChecker *c, VoicePair *vp) {
         }
     }
 
-    /* Score: consonance ratio minus penalty */
+    /* Score */
     double n = (double)vp->length;
     double cons_ratio = (double)voice_pair_consonance_count(vp) / n;
     double penalty = (double)r.violation_count * 0.1;
@@ -147,10 +163,68 @@ CheckResult checker_check(CounterpointChecker *c, VoicePair *vp) {
 }
 
 int check_result_is_valid(CheckResult *r) {
+    if (!r) return 0;
     return r->violation_count == 0;
 }
 
 double checker_score(CounterpointChecker *c, VoicePair *vp) {
     CheckResult r = checker_check(c, vp);
     return r.score;
+}
+
+/* ── Additional utility ─────────────────────────────────────────────── */
+
+int count_violations_by_type(CheckResult *r, ViolationType type) {
+    if (!r) return 0;
+    int count = 0;
+    for (int i = 0; i < r->violation_count; i++) {
+        if (r->violations[i].type == type) count++;
+    }
+    return count;
+}
+
+int has_interval_pattern(int *melody, int n, int interval) {
+    if (!melody || n < 2) return 0;
+    for (int i = 1; i < n; i++) {
+        if (abs(melody[i] - melody[i-1]) == interval) return 1;
+    }
+    return 0;
+}
+
+int melody_range(int *melody, int n) {
+    if (!melody || n <= 0) return 0;
+    int mn = melody[0], mx = melody[0];
+    for (int i = 1; i < n; i++) {
+        if (melody[i] < mn) mn = melody[i];
+        if (melody[i] > mx) mx = melody[i];
+    }
+    return mx - mn;
+}
+
+const char* note_name(int midi) {
+    static const char *names[] = {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+    static char buf[16];
+    int pc = midi % 12;
+    int oct = (midi / 12) - 1;
+    sprintf(buf, "%s%d", names[pc], oct);
+    return buf;
+}
+
+double benchmark_counterpoint(int iterations) {
+    /* Create a test voice pair */
+    int cf[8] = {60, 62, 64, 65, 67, 69, 71, 72};
+    int cp[8] = {64, 65, 67, 69, 72, 71, 72, 72};
+    VoicePair vp = voice_pair_new(cf, cp, 8);
+    CounterpointChecker c = checker_default();
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < iterations; i++) {
+        checker_check(&c, &vp);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return (double)(end.tv_sec - start.tv_sec) +
+           (double)(end.tv_nsec - start.tv_nsec) / 1e9;
 }
